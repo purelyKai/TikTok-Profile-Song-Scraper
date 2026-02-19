@@ -1,17 +1,16 @@
 services:
-  tiktok-scraper:
+  tiktok-scraper-api:
     build: .
-    container_name: tiktok-song-scraper
+    container_name: tiktok-song-scraper-api
+    ports:
+      - "8080:8080"
     environment:
-      - PROFILE=${PROFILE:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - HEADLESS=true
+      - PORT=8080
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3000}
     volumes:
-      # Mount output directory for results
+      # Mount output directory for debugging
       - ./output:/app/output
       # Optionally mount .env file
       - ./.env:/app/.env:ro
-    # Run with specific arguments (uncomment desired mode)
-    # command: ["python", "-u", "main.py", "--scrape-only"]
-    # command: ["python", "-u", "main.py", "--process-only"]
-    command: ["python", "-u", "main.py"]

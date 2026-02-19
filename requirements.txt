@@ -3,3 +3,5 @@ playwright-stealth
 requests
 python-dotenv
 google-genai
+fastapi
+uvicorn[standard]
