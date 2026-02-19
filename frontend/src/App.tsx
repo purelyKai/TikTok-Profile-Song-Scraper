@@ -33,6 +33,32 @@ interface ScrapeResponse {
   message: string;
 }
 
+// PKCE Helper Functions
+function generateRandomString(length: number): string {
+  const possible =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  const values = crypto.getRandomValues(new Uint8Array(length));
+  return values.reduce((acc, x) => acc + possible[x % possible.length], "");
+}
+
+async function sha256(plain: string): Promise<ArrayBuffer> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(plain);
+  return window.crypto.subtle.digest("SHA-256", data);
+}
+
+function base64urlencode(input: ArrayBuffer): string {
+  return btoa(String.fromCharCode(...new Uint8Array(input)))
+    .replace(/=/g, "")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_");
+}
+
+async function generateCodeChallenge(codeVerifier: string): Promise<string> {
+  const hashed = await sha256(codeVerifier);
+  return base64urlencode(hashed);
+}
+
 function App() {
   const [username, setUsername] = useState("");
   const [loading, setLoading] = useState(false);
@@ -40,18 +66,63 @@ function App() {
   const [result, setResult] = useState<ScrapeResponse | null>(null);
   const [spotifyToken, setSpotifyToken] = useState<string | null>(null);
 
-  // Check for Spotify callback on mount
+  // Check for Spotify callback on mount (PKCE flow uses query params, not hash)
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get("code");
+    const storedVerifier = localStorage.getItem("spotify_code_verifier");
+
+    if (code && storedVerifier) {
+      // Exchange code for token
+      exchangeCodeForToken(code, storedVerifier);
+    }
+
+    // Also check hash for backward compatibility
     const hash = window.location.hash;
     if (hash) {
-      const params = new URLSearchParams(hash.substring(1));
-      const token = params.get("access_token");
+      const hashParams = new URLSearchParams(hash.substring(1));
+      const token = hashParams.get("access_token");
       if (token) {
         setSpotifyToken(token);
         window.location.hash = "";
       }
     }
   }, []);
+
+  const exchangeCodeForToken = async (code: string, codeVerifier: string) => {
+    try {
+      const response = await fetch("https://accounts.spotify.com/api/token", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({
+          client_id: SPOTIFY_CLIENT_ID,
+          grant_type: "authorization_code",
+          code: code,
+          redirect_uri: SPOTIFY_REDIRECT_URI,
+          code_verifier: codeVerifier,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (data.access_token) {
+        setSpotifyToken(data.access_token);
+        localStorage.removeItem("spotify_code_verifier");
+        // Clean up URL
+        window.history.replaceState(
+          {},
+          document.title,
+          window.location.pathname,
+        );
+      } else {
+        console.error("Failed to get token:", data);
+      }
+    } catch (err) {
+      console.error("Token exchange error:", err);
+    }
+  };
 
   const handleScrape = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -87,12 +158,22 @@ function App() {
     }
   };
 
-  const handleSpotifyLogin = () => {
+  const handleSpotifyLogin = async () => {
+    // Generate PKCE code verifier and challenge
+    const codeVerifier = generateRandomString(64);
+    const codeChallenge = await generateCodeChallenge(codeVerifier);
+
+    // Store verifier for later use
+    localStorage.setItem("spotify_code_verifier", codeVerifier);
+
     const authUrl = new URL("https://accounts.spotify.com/authorize");
     authUrl.searchParams.set("client_id", SPOTIFY_CLIENT_ID);
-    authUrl.searchParams.set("response_type", "token");
+    authUrl.searchParams.set("response_type", "code");
     authUrl.searchParams.set("redirect_uri", SPOTIFY_REDIRECT_URI);
     authUrl.searchParams.set("scope", SPOTIFY_SCOPES);
+    authUrl.searchParams.set("code_challenge_method", "S256");
+    authUrl.searchParams.set("code_challenge", codeChallenge);
+
     window.location.href = authUrl.toString();
   };
 
