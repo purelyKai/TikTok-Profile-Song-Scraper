@@ -29,54 +29,58 @@ class TikTokScraper:
         self.username = username
         self.url = f"https://www.tiktok.com/@{self.username}"
         self.songs = []
+        self.headless = os.getenv('HEADLESS', 'false').lower() == 'true'
+        
+        # Determine output directory for screenshots
+        self.output_dir = "/app/output" if os.path.isdir("/app/output") else "."
 
     def _random_delay(self, min_sec=1.5, max_sec=3.5):
-        """
-        Add a random delay to mimic human behavior.
-        
-        Args:
-            min_sec (float): Minimum delay in seconds.
-            max_sec (float): Maximum delay in seconds.
-        """
+        """Add a random delay to mimic human behavior."""
         delay = random.uniform(min_sec, max_sec)
         time.sleep(delay)
+
+    def _get_screenshot_path(self, filename):
+        """Get the appropriate path for saving screenshots."""
+        return os.path.join(self.output_dir, filename)
 
     def _setup_browser(self, playwright):
         """
         Sets up a browser with stealth settings to avoid bot detection.
-        
-        Args:
-            playwright: Playwright instance.
-            
-        Returns:
-            tuple: (browser, context, page) objects.
         """
-        # Check for headless mode (for Docker/CI environments)
-        headless = os.getenv('HEADLESS', 'false').lower() == 'true'
-        
-        if headless:
+        if self.headless:
             print("Running in headless mode (Docker/CI environment)")
         
-        # Launch browser with specific args to avoid detection
+        # More comprehensive args for stealth
+        browser_args = [
+            '--disable-blink-features=AutomationControlled',
+            '--disable-infobars',
+            '--disable-dev-shm-usage',
+            '--disable-browser-side-navigation',
+            '--disable-gpu',
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-web-security',
+            '--disable-features=IsolateOrigins,site-per-process',
+            '--disable-site-isolation-trials',
+            '--disable-features=BlockInsecurePrivateNetworkRequests',
+            '--window-size=1920,1080',
+        ]
+        
+        if self.headless:
+            browser_args.extend([
+                '--headless=new',  # Use new headless mode
+                '--disable-extensions',
+            ])
+        
         browser = playwright.chromium.launch(
-            headless=headless,
-            args=[
-                '--disable-blink-features=AutomationControlled',
-                '--disable-infobars',
-                '--disable-dev-shm-usage',
-                '--disable-browser-side-navigation',
-                '--disable-gpu',
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-web-security',
-                '--disable-features=IsolateOrigins,site-per-process',
-            ]
+            headless=self.headless,
+            args=browser_args
         )
         
         # Create context with realistic browser fingerprint
         context = browser.new_context(
             viewport={'width': 1920, 'height': 1080},
-            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
             locale='en-US',
             timezone_id='America/Los_Angeles',
             geolocation={'latitude': 34.0522, 'longitude': -118.2437},
@@ -85,6 +89,12 @@ class TikTokScraper:
             java_script_enabled=True,
             has_touch=False,
             is_mobile=False,
+            extra_http_headers={
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Upgrade-Insecure-Requests': '1',
+            }
         )
         
         # Create page and apply stealth
@@ -92,6 +102,49 @@ class TikTokScraper:
         Stealth().apply_stealth_sync(page)
         
         return browser, context, page
+
+    def _try_load_page(self, page, max_retries=3):
+        """
+        Try to load the TikTok page with retries.
+        
+        Returns:
+            bool: True if page loaded successfully, False otherwise.
+        """
+        for attempt in range(1, max_retries + 1):
+            print(f"Attempt {attempt}/{max_retries} to load page...")
+            
+            try:
+                page.goto(self.url, wait_until='networkidle', timeout=60000)
+                self._random_delay(2, 4)
+                
+                # First, try to find the video grid - this is our primary success indicator
+                try:
+                    page.wait_for_selector('div[data-e2e="user-post-item"]', timeout=15000)
+                    print("Page loaded successfully! Found video grid.")
+                    return True
+                except Exception:
+                    pass
+                
+                # Video grid not found - check if it's an error page
+                content = page.content()
+                if "Something went wrong" in content:
+                    print("TikTok showed error page.")
+                else:
+                    print("Video grid not found, but no error message detected.")
+                
+                print(f"Attempt {attempt} failed.")
+                
+                if attempt < max_retries:
+                    wait_time = attempt * 5  # Smaller wait between retries
+                    print(f"Waiting {wait_time} seconds before retry...")
+                    time.sleep(wait_time)
+                    
+            except Exception as e:
+                print(f"Error during attempt {attempt}: {e}")
+                if attempt < max_retries:
+                    time.sleep(5)
+        
+        return False
 
     def scrape_songs(self, max_videos=1000):
         """
@@ -105,26 +158,20 @@ class TikTokScraper:
             
             try:
                 print(f"Navigating to {self.url}...")
-                page.goto(self.url, wait_until='networkidle', timeout=60000)
                 
-                # Random delay to mimic human behavior
-                self._random_delay(2, 4)
-                
-                # Check if we hit an error page
-                if "Something went wrong" in page.content():
-                    print("TikTok blocked the request. Trying to refresh...")
-                    self._random_delay(3, 5)
-                    page.reload(wait_until='networkidle', timeout=60000)
-                    self._random_delay(2, 4)
-                
-                # Wait for the video grid to load
-                print("Waiting for the video grid to load...")
-                try:
-                    page.wait_for_selector('div[data-e2e="user-post-item"]', timeout=30000)
-                except Exception:
-                    print("Could not find video grid. Page content may be blocked.")
+                # Try to load the page with retries
+                if not self._try_load_page(page, max_retries=3):
+                    print("Could not load page after multiple attempts.")
                     print("Taking screenshot for debugging...")
-                    page.screenshot(path="debug_screenshot.png")
+                    screenshot_path = self._get_screenshot_path("debug_screenshot.png")
+                    page.screenshot(path=screenshot_path)
+                    print(f"Screenshot saved to {screenshot_path}")
+                    
+                    # Also save the page HTML for debugging
+                    html_path = self._get_screenshot_path("debug_page.html")
+                    with open(html_path, 'w', encoding='utf-8') as f:
+                        f.write(page.content())
+                    print(f"HTML saved to {html_path}")
                     return
                 
                 # Click on the first video to open the player
@@ -143,10 +190,9 @@ class TikTokScraper:
                 
                 while video_count < max_videos:
                     try:
-                        self._random_delay(0.3, 0.6)  # Reduced delay for faster scraping
+                        self._random_delay(0.3, 0.6)
                         video_count += 1
                         
-                        # Try multiple selectors for the music/song title
                         title = self._extract_song_title(page)
                         
                         if title and title.strip():
@@ -160,13 +206,11 @@ class TikTokScraper:
                         else:
                             print(f"[{video_count}] Could not find song title for this video.")
 
-                        # Check if we can navigate to the next video
                         if not self._navigate_to_next_video(page):
                             break
 
                     except Exception as e:
                         print(f"Error while processing video {video_count}: {e}")
-                        # Try to recover and continue
                         if not self._try_recover_navigation(page):
                             print("Could not recover. Exiting loop.")
                             break
@@ -176,8 +220,9 @@ class TikTokScraper:
             except Exception as e:
                 print(f"An error occurred: {e}")
                 try:
-                    page.screenshot(path="error_screenshot.png")
-                    print("Screenshot saved to error_screenshot.png")
+                    screenshot_path = self._get_screenshot_path("error_screenshot.png")
+                    page.screenshot(path=screenshot_path)
+                    print(f"Screenshot saved to {screenshot_path}")
                 except Exception:
                     pass
             finally:
@@ -186,16 +231,7 @@ class TikTokScraper:
                 print("Browser closed.")
 
     def _extract_song_title(self, page):
-        """
-        Extract the song title from the current video page.
-        
-        Args:
-            page: Playwright page object.
-            
-        Returns:
-            str or None: The song title if found, None otherwise.
-        """
-        # Selectors in order of preference
+        """Extract the song title from the current video page."""
         music_selectors = [
             'div[class*="DivMusicText"]',
             'div[class*="MusicText"]',
@@ -217,42 +253,24 @@ class TikTokScraper:
         return None
 
     def _navigate_to_next_video(self, page):
-        """
-        Navigate to the next video in the profile.
-        
-        Args:
-            page: Playwright page object.
-            
-        Returns:
-            bool: True if navigation was successful, False if at the end.
-        """
+        """Navigate to the next video in the profile."""
         next_button = page.locator('button[data-e2e="arrow-right"]')
         
         if not next_button.is_visible(timeout=2000):
             print("Next button not visible. Reached the end.")
             return False
         
-        # Check if button is disabled (last video)
         is_disabled = next_button.get_attribute('disabled')
         if is_disabled is not None:
             print("Next button is disabled. Reached the last video.")
             return False
         
-        # Click the "next" button
         next_button.click()
         self._random_delay(0.5, 1.0)
         return True
 
     def _try_recover_navigation(self, page):
-        """
-        Try to recover and continue navigation after an error.
-        
-        Args:
-            page: Playwright page object.
-            
-        Returns:
-            bool: True if recovery was successful.
-        """
+        """Try to recover and continue navigation after an error."""
         try:
             next_button = page.locator('button[data-e2e="arrow-right"]')
             if next_button.is_visible(timeout=2000):
@@ -264,12 +282,7 @@ class TikTokScraper:
         return False
 
     def save_to_json(self, filename="songs.json"):
-        """
-        Saves the scraped songs to a JSON file.
-        
-        Args:
-            filename (str): The output filename.
-        """
+        """Saves the scraped songs to a JSON file."""
         print(f"Saving {len(self.songs)} songs to {filename}...")
         with open(filename, 'w', encoding='utf-8') as f:
             json.dump(self.songs, f, ensure_ascii=False, indent=4)
