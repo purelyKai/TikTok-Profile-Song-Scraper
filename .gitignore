@@ -1,5 +1,7 @@
 # Output files
-*.json
+raw_songs.json
+processed_songs.json
+songs.json
 output/
 
 # Debug screenshots
