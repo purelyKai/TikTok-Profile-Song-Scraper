@@ -9,7 +9,7 @@ import os
 import time
 import random
 import json
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 from playwright_stealth import Stealth
 
 
@@ -18,6 +18,15 @@ class TikTokScraper:
     A class to scrape song data from a TikTok user's profile.
     Uses playwright-stealth to bypass bot detection.
     """
+    
+    # Selectors for audio/music title
+    MUSIC_SELECTORS = [
+        'a[data-e2e="browse-music"]',
+        'a[data-e2e="video-music"]',
+        '[data-e2e="browse-music-name"]',
+        'div[class*="DivMusicText"]',
+        'div[class*="MusicText"]',
+    ]
     
     def __init__(self, username: str):
         """
@@ -31,11 +40,6 @@ class TikTokScraper:
         self.songs: list[str] = []
         self.headless = os.getenv('HEADLESS', 'false').lower() == 'true'
         self.output_dir = "/app/output" if os.path.isdir("/app/output") else "."
-
-    def _random_delay(self, min_sec: float = 1.5, max_sec: float = 3.5) -> None:
-        """Add a random delay to mimic human behavior."""
-        delay = random.uniform(min_sec, max_sec)
-        time.sleep(delay)
 
     def _get_screenshot_path(self, filename: str) -> str:
         """Get the appropriate path for saving screenshots."""
@@ -103,7 +107,7 @@ class TikTokScraper:
             
             try:
                 page.goto(self.url, wait_until='networkidle', timeout=60000)
-                self._random_delay(2, 4)
+                time.sleep(random.uniform(2, 3))  # Initial page load delay
                 
                 try:
                     page.wait_for_selector('div[data-e2e="user-post-item"]', timeout=15000)
@@ -132,9 +136,63 @@ class TikTokScraper:
         
         return False
 
+    def _get_music_title(self, page) -> str | None:
+        """Get the music/audio title. Returns immediately if found."""
+        for selector in self.MUSIC_SELECTORS:
+            try:
+                element = page.locator(selector).first
+                if element.is_visible():
+                    title = element.inner_text(timeout=200)
+                    if title and title.strip():
+                        return title.strip()
+            except Exception:
+                continue
+        return None
+
+    def _click_next_and_wait_for_change(self, page, current_title: str | None) -> tuple[bool, str | None]:
+        """
+        Click next and wait for content to change. Returns (success, new_title).
+        Waits up to 2 seconds for the title to change, otherwise proceeds.
+        """
+        next_button = page.locator('button[data-e2e="arrow-right"]')
+        
+        try:
+            # Wait for next button to appear (up to 5 seconds)
+            # This handles slow loading / transition between videos
+            for i in range(50):
+                if next_button.is_visible():
+                    break
+                time.sleep(0.1)
+            else:
+                print("Next button not visible after 5 seconds. Reached the end.")
+                return False, None
+            
+            # Check if disabled (last video)
+            if next_button.get_attribute('disabled') is not None:
+                print("Next button is disabled. Reached the last video.")
+                return False, None
+            
+            # Click next
+            next_button.click()
+            
+            # Wait for title to change (max 2 seconds, check every 100ms)
+            for _ in range(20):
+                new_title = self._get_music_title(page)
+                if new_title and new_title != current_title:
+                    return True, new_title
+                time.sleep(0.1)
+            
+            # Title didn't change, but still continue
+            return True, self._get_music_title(page)
+            
+        except Exception as e:
+            print(f"Error navigating: {e}")
+            return False, None
+
     def scrape_songs(self, max_videos: int = 1000) -> list[str]:
         """
         Scrapes the songs from the user's profile by clicking through videos.
+        Optimized for speed - waits only for necessary elements to load.
         
         Args:
             max_videos: Maximum number of videos to scrape (safety limit).
@@ -160,44 +218,37 @@ class TikTokScraper:
                     print(f"HTML saved to {html_path}")
                     return self.songs
                 
+                # Click on the first video
                 print("Clicking on the first video...")
                 first_video = page.locator('div[data-e2e="user-post-item"]').first
                 first_video.click()
                 
-                self._random_delay(2, 3)
+                # Wait for video viewer to open
                 print("Waiting for video viewer to open...")
                 page.wait_for_selector('[data-e2e="browse-video"]', timeout=15000)
                 print("Video viewer opened.")
                 
                 song_titles = set()
                 video_count = 0
+                current_title = self._get_music_title(page)
                 
                 while video_count < max_videos:
-                    try:
-                        self._random_delay(0.3, 0.6)
-                        video_count += 1
-                        
-                        title = self._extract_song_title(page)
-                        
-                        if title and title.strip():
-                            title = title.strip()
-                            if title not in song_titles:
-                                print(f"[{video_count}] Found song: {title}")
-                                self.songs.append(title)
-                                song_titles.add(title)
-                            else:
-                                print(f"[{video_count}] Duplicate song: {title}")
+                    video_count += 1
+                    
+                    if current_title:
+                        if current_title not in song_titles:
+                            print(f"[{video_count}] Found: {current_title}")
+                            self.songs.append(current_title)
+                            song_titles.add(current_title)
                         else:
-                            print(f"[{video_count}] Could not find song title for this video.")
-
-                        if not self._navigate_to_next_video(page):
-                            break
-
-                    except Exception as e:
-                        print(f"Error while processing video {video_count}: {e}")
-                        if not self._try_recover_navigation(page):
-                            print("Could not recover. Exiting loop.")
-                            break
+                            print(f"[{video_count}] Duplicate: {current_title}")
+                    else:
+                        print(f"[{video_count}] No audio title found")
+                    
+                    # Click next and wait for new content
+                    success, current_title = self._click_next_and_wait_for_change(page, current_title)
+                    if not success:
+                        break
                 
                 print(f"\nScraping complete! Found {len(self.songs)} unique songs from {video_count} videos.")
 
@@ -215,64 +266,6 @@ class TikTokScraper:
                 print("Browser closed.")
         
         return self.songs
-
-    def _extract_song_title(self, page) -> str | None:
-        """Extract the song title from the current video page."""
-        music_selectors = [
-            'div[class*="DivMusicText"]',
-            'div[class*="MusicText"]',
-            'a[data-e2e="browse-music"]',
-            'a[data-e2e="video-music"]',
-            '[data-e2e="browse-music-name"]',
-        ]
-        
-        for selector in music_selectors:
-            try:
-                music_element = page.locator(selector).first
-                if music_element.is_visible(timeout=2000):
-                    title = music_element.inner_text(timeout=3000)
-                    if title and title.strip():
-                        return title
-            except Exception:
-                continue
-        
-        return None
-
-    def _navigate_to_next_video(self, page, retries: int = 3) -> bool:
-        """Navigate to the next video in the profile with retry logic."""
-        next_button = page.locator('button[data-e2e="arrow-right"]')
-        
-        for attempt in range(retries):
-            try:
-                if next_button.is_visible(timeout=2000):
-                    is_disabled = next_button.get_attribute('disabled')
-                    if is_disabled is not None:
-                        print("Next button is disabled. Reached the last video.")
-                        return False
-                    
-                    next_button.click()
-                    self._random_delay(0.5, 1.0)
-                    return True
-            except Exception:
-                pass
-            
-            if attempt < retries - 1:
-                self._random_delay(1.5, 2.5)
-        
-        print("Next button not visible after retries. Reached the end.")
-        return False
-
-    def _try_recover_navigation(self, page) -> bool:
-        """Try to recover and continue navigation after an error."""
-        try:
-            next_button = page.locator('button[data-e2e="arrow-right"]')
-            if next_button.is_visible(timeout=2000):
-                next_button.click()
-                self._random_delay(0.5, 1.0)
-                return True
-        except Exception:
-            pass
-        return False
 
     def save_to_json(self, filename: str = "songs.json") -> None:
         """Saves the scraped songs to a JSON file."""
