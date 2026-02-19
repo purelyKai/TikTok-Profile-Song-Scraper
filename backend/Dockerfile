@@ -14,19 +14,19 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN playwright install chromium
 
 # Copy application code
-COPY scraper.py processor.py main.py ./
-COPY api/ ./api/
+COPY app/ ./app/
+COPY cli.py .
 
 # Create output directory
 RUN mkdir -p /app/output
 
-# Set environment variables for Docker/Cloud Run
+# Set environment variables
 ENV HEADLESS=true
 ENV PYTHONUNBUFFERED=1
 ENV PORT=8080
 
-# Expose port for Cloud Run
+# Expose port
 EXPOSE 8080
 
 # Run the FastAPI server
-CMD ["python", "-m", "uvicorn", "api.server:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]

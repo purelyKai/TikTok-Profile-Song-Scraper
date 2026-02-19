@@ -1,13 +1,14 @@
 """
-TikTok Profile Song Scraper - Main Entry Point
+TikTok Profile Song Scraper - CLI Entry Point
 
 This script scrapes audio titles from a TikTok user's profile and optionally
 processes them with Gemini AI to identify real songs.
 
 Usage:
-    python main.py                  # Scrape and process (if API key available)
-    python main.py --scrape-only    # Only scrape, skip AI processing
-    python main.py --process-only   # Only process existing raw_songs.json
+    python cli.py                  # Scrape and process (if API key available)
+    python cli.py --scrape-only    # Only scrape, skip AI processing
+    python cli.py --process-only   # Only process existing raw_songs.json
+    python cli.py --profile user   # Scrape specific user
 """
 
 import os
@@ -15,28 +16,19 @@ import json
 import argparse
 from dotenv import load_dotenv
 
-from scraper import TikTokScraper
-from processor import SongProcessor
+from app.services.scraper import TikTokScraper
+from app.services.processor import SongProcessor
 
 
-def get_output_path(filename):
+def get_output_path(filename: str) -> str:
     """Get the appropriate output path based on environment."""
-    # Check if output directory exists (Docker environment)
-    output_dir = "/app/output" if os.path.isdir("/app/output") else "."
+    output_dir = "/app/output" if os.path.isdir("/app/output") else "output"
+    os.makedirs(output_dir, exist_ok=True)
     return os.path.join(output_dir, filename)
 
 
-def scrape_tiktok(username, output_file="raw_songs.json"):
-    """
-    Scrape audio titles from a TikTok user's profile.
-    
-    Args:
-        username (str): TikTok username to scrape.
-        output_file (str): Output file for raw titles.
-        
-    Returns:
-        list: List of scraped audio titles.
-    """
+def scrape_tiktok(username: str, output_file: str = "raw_songs.json") -> list[str]:
+    """Scrape audio titles from a TikTok user's profile."""
     print(f"Starting TikTok song scraper for user: {username}")
     print("=" * 50)
     
@@ -47,19 +39,13 @@ def scrape_tiktok(username, output_file="raw_songs.json"):
     return scraper.songs
 
 
-def process_with_ai(raw_titles, api_key, raw_output="processed_songs.json", final_output="songs.json"):
-    """
-    Process raw audio titles with Gemini AI to identify real songs.
-    
-    Args:
-        raw_titles (list): List of raw audio titles.
-        api_key (str): Gemini API key.
-        raw_output (str): Output file for full processed results.
-        final_output (str): Output file for clean song list.
-        
-    Returns:
-        tuple: (processed_results, formatted_songs)
-    """
+def process_with_ai(
+    raw_titles: list[str], 
+    api_key: str, 
+    raw_output: str = "processed_songs.json", 
+    final_output: str = "songs.json"
+) -> tuple[list[dict], list[dict]]:
+    """Process raw audio titles with Gemini AI to identify real songs."""
     print("\n" + "=" * 50)
     print("Processing audio titles with Gemini AI...")
     print("=" * 50)
@@ -67,23 +53,14 @@ def process_with_ai(raw_titles, api_key, raw_output="processed_songs.json", fina
     processor = SongProcessor(api_key)
     processed_results = processor.process_songs(raw_titles)
     
-    # Save full processed results
     processor.save_results(processed_results, get_output_path(raw_output))
-    
-    # Save formatted real songs
     real_songs = processor.save_formatted_songs(processed_results, get_output_path(final_output))
     
     return processed_results, real_songs
 
 
-def print_summary(total_titles, real_songs):
-    """
-    Print a summary of the scraping and processing results.
-    
-    Args:
-        total_titles (int): Total number of titles scraped.
-        real_songs (list): List of identified real songs.
-    """
+def print_summary(total_titles: int, real_songs: list[dict]) -> None:
+    """Print a summary of the scraping and processing results."""
     real_count = len(real_songs)
     print(f"\n{'=' * 50}")
     print("SUMMARY")
@@ -91,15 +68,14 @@ def print_summary(total_titles, real_songs):
     print(f"Total unique audio titles scraped: {total_titles}")
     print(f"Identified as real songs: {real_count}")
     print(f"User originals/unidentified: {total_titles - real_count}")
-    print(f"\nFiles created:")
+    print(f"\nFiles created in output/:")
     print(f"  - raw_songs.json: Raw TikTok audio titles")
     print(f"  - processed_songs.json: Full AI analysis results")
     print(f"  - songs.json: Clean list of real songs")
 
 
 def main():
-    """Main entry point for the TikTok song scraper."""
-    # Parse command line arguments
+    """Main entry point for the TikTok song scraper CLI."""
     parser = argparse.ArgumentParser(
         description="Scrape and identify songs from a TikTok user's profile"
     )
@@ -120,14 +96,11 @@ def main():
     )
     args = parser.parse_args()
     
-    # Load environment variables
     load_dotenv()
     
-    # Get configuration
     tiktok_username = args.profile or os.getenv("PROFILE")
     gemini_api_key = os.getenv("GEMINI_API_KEY")
     
-    # Validate configuration
     if not args.process_only and not tiktok_username:
         print("Error: PROFILE environment variable not set.")
         print("Please create a .env file with: PROFILE=username")
@@ -136,11 +109,9 @@ def main():
     
     raw_titles = []
     
-    # Step 1: Scrape (unless --process-only)
     if not args.process_only:
         raw_titles = scrape_tiktok(tiktok_username)
     else:
-        # Load existing raw songs
         raw_songs_path = get_output_path("raw_songs.json")
         try:
             with open(raw_songs_path, 'r', encoding='utf-8') as f:
@@ -150,10 +121,9 @@ def main():
             print(f"Error: {raw_songs_path} not found. Run scraper first.")
             return
     
-    # Step 2: Process with AI (unless --scrape-only)
     if args.scrape_only:
         print("\nSkipping AI processing (--scrape-only flag set).")
-        print("To process later, run: python main.py --process-only")
+        print("To process later, run: python cli.py --process-only")
         return
     
     if not gemini_api_key:
@@ -165,10 +135,7 @@ def main():
         print("\nNo songs found to process.")
         return
     
-    # Process with AI
     processed_results, real_songs = process_with_ai(raw_titles, gemini_api_key)
-    
-    # Print summary
     print_summary(len(raw_titles), real_songs)
 
 

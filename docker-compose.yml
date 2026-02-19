@@ -1,16 +1,13 @@
 services:
-  tiktok-scraper-api:
-    build: .
-    container_name: tiktok-song-scraper-api
+  backend:
+    build: ./backend
+    container_name: tiktok-scraper-backend
     ports:
       - "8080:8080"
+    env_file:
+      - .env # GEMINI_API_KEY, FRONTEND_URL
     environment:
-      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      # These override Dockerfile defaults for local dev
       - HEADLESS=true
-      - PORT=8080
-      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3000}
     volumes:
-      # Mount output directory for debugging
-      - ./output:/app/output
-      # Optionally mount .env file
-      - ./.env:/app/.env:ro
+      - ./backend/output:/app/output

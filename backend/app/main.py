@@ -1,43 +1,38 @@
 """
-TikTok Song Scraper API Server
+TikTok Song Scraper API
 
 FastAPI backend that provides an API endpoint for scraping
 TikTok profiles and identifying songs.
 """
 
 import os
-import sys
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from typing import Optional
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
 
-# Add parent directory to path for imports
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from scraper import TikTokScraper
-from processor import SongProcessor
+from app.models.schemas import ScrapeRequest, ScrapeResponse, SongResult, HealthResponse
+from app.services.scraper import TikTokScraper
+from app.services.processor import SongProcessor
 
 # Thread pool for running sync scraper
 executor = ThreadPoolExecutor(max_workers=2)
 
+# FastAPI app
 app = FastAPI(
     title="TikTok Song Scraper API",
     description="Scrape audio/song titles from TikTok profiles and identify real songs using AI",
     version="1.0.0"
 )
 
-# Configure CORS for frontend access
-# Note: Wildcards don't work with CORS - need explicit origins
+# Configure CORS
 allowed_origins = [
     "http://localhost:3000",
     "http://localhost:5173",
     "https://tik-tok-profile-song-scraper.vercel.app",
 ]
 
-# Add custom frontend URL from environment if set
 frontend_url = os.getenv("FRONTEND_URL", "")
 if frontend_url and frontend_url not in allowed_origins:
     allowed_origins.append(frontend_url)
@@ -51,60 +46,32 @@ app.add_middleware(
 )
 
 
-class ScrapeRequest(BaseModel):
-    """Request model for scraping a TikTok profile."""
-    username: str = Field(..., min_length=1, max_length=50, description="TikTok username to scrape")
-    process_with_ai: bool = Field(default=True, description="Whether to process songs with Gemini AI")
-
-
-class SongResult(BaseModel):
-    """Individual song result."""
-    song: Optional[str]
-    artist: Optional[str]
-    type: str
-    confidence: Optional[str]
-    tiktok_title: str
-
-
-class ScrapeResponse(BaseModel):
-    """Response model for scrape results."""
-    username: str
-    total_videos_scraped: int
-    total_unique_titles: int
-    real_songs_identified: int
-    raw_titles: list[str]
-    processed_songs: Optional[list[SongResult]]
-    message: str
-
-
-@app.get("/")
-async def root():
-    """Health check endpoint."""
-    return {
-        "status": "healthy",
-        "service": "TikTok Song Scraper API",
-        "version": "1.0.0"
-    }
-
-
-@app.get("/health")
-async def health_check():
-    """Health check for Cloud Run."""
-    return {"status": "healthy"}
-
-
-def run_scraper(username: str) -> list:
+# Helper functions for running sync code in thread pool
+def run_scraper(username: str) -> list[str]:
     """Run the scraper in a separate thread (sync code)."""
     scraper = TikTokScraper(username)
     scraper.scrape_songs()
     return scraper.songs
 
 
-def run_processor(raw_titles: list, api_key: str) -> list:
+def run_processor(raw_titles: list[str], api_key: str) -> list[dict]:
     """Run the AI processor in a separate thread (sync code)."""
     processor = SongProcessor(api_key)
     processed_results = processor.process_songs(raw_titles)
     return processor.format_song_list(processed_results)
+
+
+# Routes
+@app.get("/", response_model=HealthResponse)
+async def root():
+    """Health check endpoint."""
+    return HealthResponse(status="healthy")
+
+
+@app.get("/health", response_model=HealthResponse)
+async def health_check():
+    """Health check for Cloud Run."""
+    return HealthResponse(status="healthy")
 
 
 @app.post("/scrape", response_model=ScrapeResponse)
@@ -124,12 +91,11 @@ async def scrape_profile(request: ScrapeRequest):
     if not username:
         raise HTTPException(status_code=400, detail="Username cannot be empty")
     
-    # Validate username format (basic check)
     if not username.replace("_", "").replace(".", "").isalnum():
         raise HTTPException(status_code=400, detail="Invalid username format")
     
     try:
-        # Step 1: Scrape the profile (run in thread pool to avoid async/sync conflict)
+        # Run scraper in thread pool
         loop = asyncio.get_event_loop()
         raw_titles = await loop.run_in_executor(executor, run_scraper, username)
         
@@ -144,7 +110,7 @@ async def scrape_profile(request: ScrapeRequest):
                 message="No videos found or could not load the profile. The account may be private or blocked."
             )
         
-        # Step 2: Optionally process with AI
+        # Process with AI if requested
         processed_songs = None
         real_songs_count = 0
         
@@ -152,7 +118,6 @@ async def scrape_profile(request: ScrapeRequest):
             gemini_api_key = os.getenv("GEMINI_API_KEY")
             
             if gemini_api_key:
-                # Run AI processing in thread pool
                 formatted = await loop.run_in_executor(
                     executor, 
                     run_processor, 
@@ -171,13 +136,10 @@ async def scrape_profile(request: ScrapeRequest):
                     for s in formatted
                 ]
                 real_songs_count = len(processed_songs)
-            else:
-                # No API key, skip processing
-                processed_songs = None
         
         return ScrapeResponse(
             username=username,
-            total_videos_scraped=len(raw_titles),  # Approximation
+            total_videos_scraped=len(raw_titles),
             total_unique_titles=len(raw_titles),
             real_songs_identified=real_songs_count,
             raw_titles=raw_titles,

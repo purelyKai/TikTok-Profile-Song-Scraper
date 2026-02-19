@@ -1,159 +1,185 @@
 # TikTok Profile Song Scraper
 
-Scrape audio/song titles from any TikTok user's profile and optionally use Gemini AI to identify real songs from the raw audio titles.
-
-## Features
-
-- **Stealth Scraping**: Uses Playwright with stealth capabilities to bypass TikTok's bot detection
-- **AI Song Identification**: Integrates with Google's Gemini AI to identify real songs from TikTok audio titles
-- **Modular Design**: Clean separation of concerns with dedicated scraper and processor modules
-- **Flexible CLI**: Run full pipeline, scrape-only, or process-only modes
+Extract songs from any TikTok profile and create a Spotify playlist.
 
 ## Project Structure
 
 ```
-├── main.py           # Main entry point with CLI
-├── scraper.py        # TikTokScraper class for web scraping
-├── processor.py      # SongProcessor class for AI processing
-├── requirements.txt  # Python dependencies
-├── .env.example      # Example environment configuration
-└── .env              # Your environment configuration (create this)
+├── backend/                     # FastAPI + Playwright backend
+│   ├── app/
+│   │   ├── __init__.py
+│   │   ├── main.py              # FastAPI app + routes
+│   │   ├── models/
+│   │   │   ├── __init__.py
+│   │   │   └── schemas.py       # Pydantic request/response models
+│   │   └── services/
+│   │       ├── __init__.py
+│   │       ├── scraper.py       # TikTok scraping logic
+│   │       └── processor.py     # Gemini AI song processing
+│   ├── cli.py                   # Command-line interface
+│   ├── Dockerfile
+│   ├── requirements.txt
+│   ├── .env.example
+│   └── output/                  # Scraped data output
+│
+├── frontend/                    # React + Vite frontend
+│   ├── src/
+│   │   └── App.tsx              # Main React component
+│   ├── package.json
+│   ├── vite.config.ts
+│   └── .env.example
+│
+├── docker-compose.yml           # Local development
+├── .env.example
+├── README.md
+└── LICENSE
 ```
 
-## Installation
+## Quick Start
 
-1. Clone the repository:
-
-```bash
-git clone https://github.com/purelyKai/TikTok-Profile-Song-Scraper.git
-cd TikTok-Profile-Song-Scraper
-```
-
-2. Install dependencies:
+### Backend (API Server)
 
 ```bash
-pip install -r requirements.txt
-```
-
-3. Install Playwright browsers:
-
-```bash
-python -m playwright install chromium
-```
-
-4. Create your `.env` file:
-
-```bash
+# With Docker (recommended)
 cp .env.example .env
+# Edit .env with your GEMINI_API_KEY
+docker-compose up --build
+
+# API available at http://localhost:8080
+# API docs at http://localhost:8080/docs
 ```
 
-5. Edit `.env` with your configuration:
+### Frontend (React App)
+
+```bash
+cd frontend
+cp .env.example .env
+# Edit .env with your API URL and Spotify credentials
+npm install
+npm run dev
+
+# Frontend available at http://localhost:5173
+```
+
+### CLI (Command Line)
+
+```bash
+cd backend
+pip install -r requirements.txt
+playwright install chromium
+
+# Scrape a profile
+python cli.py --profile mrbeast
+
+# Options:
+python cli.py --scrape-only     # Skip AI processing
+python cli.py --process-only    # Process existing raw_songs.json
+```
+
+## Environment Variables
+
+### Backend (.env)
 
 ```env
-PROFILE=tiktok_username_to_scrape
-GEMINI_API_KEY=your_gemini_api_key  # Optional, for AI processing
+GEMINI_API_KEY=your_gemini_api_key_here
+FRONTEND_URL=http://localhost:5173
 ```
 
-## Usage
+### Frontend (frontend/.env)
 
-### Full Pipeline (Scrape + AI Processing)
+```env
+VITE_API_URL=http://localhost:8080
+VITE_SPOTIFY_CLIENT_ID=your_spotify_client_id
+VITE_SPOTIFY_REDIRECT_URI=http://localhost:5173/callback
+```
+
+## Deployment
+
+### Backend → Google Cloud Run
+
+The backend uses Playwright with Chromium, which requires significant resources. Scraping a large profile can take up to 20 minutes.
 
 ```bash
-python main.py
+cd backend
+gcloud run deploy tiktok-scraper-api \
+  --source . \
+  --region us-central1 \
+  --allow-unauthenticated \
+  --timeout 1200 \
+  --memory 4Gi \
+  --cpu 4 \
+  --concurrency 1 \
+  --min-instances 0 \
+  --max-instances 2 \
+  --set-env-vars "HEADLESS=true,GEMINI_API_KEY=$GEMINI_API_KEY,FRONTEND_URL=https://your-frontend.vercel.app"
 ```
 
-### Scrape Only (No AI Processing)
+**Resource Settings Explained:**
+
+| Setting           | Value | Why                                                     |
+| ----------------- | ----- | ------------------------------------------------------- |
+| `--timeout`       | 1200  | 20 minutes max for large profiles (max allowed: 3600)   |
+| `--memory`        | 4Gi   | Chromium needs ~2-3GB, extra headroom for stability     |
+| `--cpu`           | 4     | Browser rendering is CPU-intensive                      |
+| `--concurrency`   | 1     | Each request gets dedicated resources (browser-heavy)   |
+| `--min-instances` | 0     | Scale to zero when idle (cost savings, ~30s cold start) |
+| `--max-instances` | 2     | Limit concurrent containers to control costs            |
+
+**Cost Note:** You only pay while processing requests (~$0.00002400/vCPU-second, ~$0.00000250/GiB-second).
+
+### Frontend → Vercel
 
 ```bash
-python main.py --scrape-only
+cd frontend
+vercel --prod
 ```
 
-### Process Existing Data with AI
+Set environment variables in Vercel dashboard:
 
-```bash
-python main.py --process-only
+- `VITE_API_URL` → Your Cloud Run URL
+- `VITE_SPOTIFY_CLIENT_ID` → From Spotify Developer Dashboard
+- `VITE_SPOTIFY_REDIRECT_URI` → `https://your-app.vercel.app/callback`
+
+## API Endpoints
+
+| Method | Endpoint | Description                |
+| ------ | -------- | -------------------------- |
+| GET    | /        | Health check               |
+| GET    | /health  | Health check for Cloud Run |
+| POST   | /scrape  | Scrape a TikTok profile    |
+
+### POST /scrape
+
+Request:
+
+```json
+{
+  "username": "mrbeast",
+  "process_with_ai": true
+}
 ```
 
-### Specify Profile via CLI
+Response:
 
-```bash
-python main.py --profile username
+```json
+{
+  "username": "mrbeast",
+  "total_videos_scraped": 100,
+  "total_unique_titles": 85,
+  "real_songs_identified": 42,
+  "raw_titles": ["song1", "song2"],
+  "processed_songs": [
+    {
+      "song": "Song Title",
+      "artist": "Artist Name",
+      "type": "original",
+      "confidence": "high",
+      "tiktok_title": "original tiktok audio title"
+    }
+  ],
+  "message": "Successfully scraped 85 unique audio titles"
+}
 ```
-
-## Output Files
-
-- **`raw_songs.json`**: Raw TikTok audio titles as scraped
-- **`processed_songs.json`**: Full AI analysis results with metadata
-- **`songs.json`**: Clean list of identified real songs
-
-## Docker Usage
-
-### Using Docker Compose (Recommended)
-
-1. Make sure your `.env` file is configured
-2. Run the scraper:
-
-```bash
-docker-compose up --build
-```
-
-3. Results will be saved to the `./output` directory
-
-### Using Docker Directly
-
-Build the image:
-
-```bash
-docker build -t tiktok-scraper .
-```
-
-Run the container:
-
-```bash
-docker run --rm \
-  -e PROFILE=tiktok_username \
-  -e GEMINI_API_KEY=your_api_key \
-  -v $(pwd)/output:/app/output \
-  tiktok-scraper
-```
-
-### Docker Environment Variables
-
-| Variable         | Description                                              | Required |
-| ---------------- | -------------------------------------------------------- | -------- |
-| `PROFILE`        | TikTok username to scrape                                | Yes      |
-| `GEMINI_API_KEY` | Gemini API key for AI processing                         | No       |
-| `HEADLESS`       | Run browser in headless mode (default: `true` in Docker) | No       |
-
-## Getting a Gemini API Key
-
-1. Visit [Google AI Studio](https://aistudio.google.com/app/apikey)
-2. Create a new API key (free tier available)
-3. Add it to your `.env` file
-
-## How It Works
-
-1. **Scraping**: The scraper navigates to the TikTok profile, opens each video, and extracts the audio title using Playwright with stealth settings to avoid detection.
-
-2. **AI Processing**: The processor sends batches of audio titles to Gemini AI, which:
-   - Identifies if each title is a real song or user-created audio
-   - Extracts the actual song name and artist
-   - Notes if it's a remix, cover, or mashup
-   - Provides confidence levels
-
-## Requirements
-
-- Python 3.8+
-- Chromium browser (installed via Playwright)
-- Internet connection
-- (Optional) Gemini API key for AI processing
-
-## Dependencies
-
-- `playwright` - Browser automation
-- `playwright-stealth` - Stealth capabilities to avoid detection
-- `python-dotenv` - Environment variable management
-- `google-genai` - Gemini AI integration
 
 ## License
 
