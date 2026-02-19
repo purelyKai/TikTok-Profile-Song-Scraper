@@ -111,7 +111,7 @@ gcloud run deploy tiktok-scraper-api \
   --concurrency 1 \
   --min-instances 0 \
   --max-instances 2 \
-  --set-env-vars "HEADLESS=true,GEMINI_API_KEY=$GEMINI_API_KEY,FRONTEND_URL=https://your-frontend.vercel.app"
+  --set-env-vars "HEADLESS=true,GEMINI_API_KEY=YOUR_ACTUAL_KEY,FRONTEND_URL=https://your-frontend.vercel.app"
 ```
 
 **Resource Settings Explained:**
