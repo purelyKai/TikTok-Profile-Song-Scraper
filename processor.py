@@ -110,7 +110,7 @@ Important rules:
 - "original sound - [username]" entries are NOT real songs (is_real_song: false)
 - Songs with real artist names in the title ARE real songs
 - If you recognize lyrics, identify the actual song
-- Be conservative - if unsure, set confidence to "low"
+- Be somewhat liberal - if you think it could be a real song, mark it as such, but use confidence levels to indicate uncertainty
 - Return ONLY valid JSON, no other text"""
 
         response = self.client.models.generate_content(
