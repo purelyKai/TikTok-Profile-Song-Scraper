@@ -1,3 +1,16 @@
+# Output files
+*.json
+output/
+
+# Debug screenshots
+debug_screenshot.png
+error_screenshot.png
+
+# Temporary files
+nul
+
+## Python.gitignore Template Below -- Custom ignore Rules on Top ##
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

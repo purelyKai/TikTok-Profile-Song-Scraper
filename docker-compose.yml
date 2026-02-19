@@ -1,0 +1,17 @@
+services:
+  tiktok-scraper:
+    build: .
+    container_name: tiktok-song-scraper
+    environment:
+      - PROFILE=${PROFILE:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - HEADLESS=true
+    volumes:
+      # Mount output directory for results
+      - ./output:/app/output
+      # Optionally mount .env file
+      - ./.env:/app/.env:ro
+    # Run with specific arguments (uncomment desired mode)
+    # command: ["python", "-u", "main.py", "--scrape-only"]
+    # command: ["python", "-u", "main.py", "--process-only"]
+    command: ["python", "-u", "main.py"]
