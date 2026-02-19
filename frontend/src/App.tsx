@@ -1,155 +1,44 @@
 import { useState, useEffect } from "react";
+import { useSpotify } from "./hooks/useSpotify";
+import { scrapeTikTokProfile } from "./services/api";
+import { SpotifyAuth } from "./components/SpotifyAuth";
+import { ScrapeForm } from "./components/ScrapeForm";
+import { SongList } from "./components/SongList";
+import type { ScrapeResponse } from "./types";
 
-// API Configuration
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8080";
-
-// Spotify Configuration
-const SPOTIFY_CLIENT_ID = import.meta.env.VITE_SPOTIFY_CLIENT_ID || "";
-const SPOTIFY_REDIRECT_URI =
-  import.meta.env.VITE_SPOTIFY_REDIRECT_URI ||
-  window.location.origin + "/callback";
-const SPOTIFY_SCOPES = [
-  "user-read-private",
-  "user-read-email",
-  "playlist-modify-public",
-  "playlist-modify-private",
-].join(" ");
-
-interface Song {
-  song: string | null;
-  artist: string | null;
-  type: string;
-  confidence: string | null;
-  tiktok_title: string;
-}
-
-interface ScrapeResponse {
-  username: string;
-  total_videos_scraped: number;
-  total_unique_titles: number;
-  real_songs_identified: number;
-  raw_titles: string[];
-  processed_songs: Song[] | null;
-  message: string;
-}
-
-// PKCE Helper Functions
-function generateRandomString(length: number): string {
-  const possible =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-  const values = crypto.getRandomValues(new Uint8Array(length));
-  return values.reduce((acc, x) => acc + possible[x % possible.length], "");
-}
-
-async function sha256(plain: string): Promise<ArrayBuffer> {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(plain);
-  return window.crypto.subtle.digest("SHA-256", data);
-}
-
-function base64urlencode(input: ArrayBuffer): string {
-  return btoa(String.fromCharCode(...new Uint8Array(input)))
-    .replace(/=/g, "")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_");
-}
-
-async function generateCodeChallenge(codeVerifier: string): Promise<string> {
-  const hashed = await sha256(codeVerifier);
-  return base64urlencode(hashed);
-}
+const STORAGE_KEY = "tiktok_scrape_result";
 
 function App() {
-  const [username, setUsername] = useState("");
+  const spotify = useSpotify();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<ScrapeResponse | null>(null);
-  const [spotifyToken, setSpotifyToken] = useState<string | null>(null);
 
-  // Check for Spotify callback on mount (PKCE flow uses query params, not hash)
+  // Load persisted result from localStorage on mount
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const code = params.get("code");
-    const storedVerifier = localStorage.getItem("spotify_code_verifier");
-
-    if (code && storedVerifier) {
-      // Exchange code for token
-      exchangeCodeForToken(code, storedVerifier);
-    }
-
-    // Also check hash for backward compatibility
-    const hash = window.location.hash;
-    if (hash) {
-      const hashParams = new URLSearchParams(hash.substring(1));
-      const token = hashParams.get("access_token");
-      if (token) {
-        setSpotifyToken(token);
-        window.location.hash = "";
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (stored) {
+      try {
+        setResult(JSON.parse(stored));
+      } catch {
+        localStorage.removeItem(STORAGE_KEY);
       }
     }
   }, []);
 
-  const exchangeCodeForToken = async (code: string, codeVerifier: string) => {
-    try {
-      const response = await fetch("https://accounts.spotify.com/api/token", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-        },
-        body: new URLSearchParams({
-          client_id: SPOTIFY_CLIENT_ID,
-          grant_type: "authorization_code",
-          code: code,
-          redirect_uri: SPOTIFY_REDIRECT_URI,
-          code_verifier: codeVerifier,
-        }),
-      });
-
-      const data = await response.json();
-
-      if (data.access_token) {
-        setSpotifyToken(data.access_token);
-        localStorage.removeItem("spotify_code_verifier");
-        // Clean up URL
-        window.history.replaceState(
-          {},
-          document.title,
-          window.location.pathname,
-        );
-      } else {
-        console.error("Failed to get token:", data);
-      }
-    } catch (err) {
-      console.error("Token exchange error:", err);
+  // Persist result to localStorage whenever it changes
+  useEffect(() => {
+    if (result) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(result));
     }
-  };
+  }, [result]);
 
-  const handleScrape = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!username.trim()) return;
-
+  const handleScrape = async (username: string) => {
     setLoading(true);
     setError(null);
-    setResult(null);
 
     try {
-      const response = await fetch(`${API_URL}/scrape`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          username: username.trim(),
-          process_with_ai: true,
-        }),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.detail || "Failed to scrape profile");
-      }
-
-      const data: ScrapeResponse = await response.json();
+      const data = await scrapeTikTokProfile(username);
       setResult(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");
@@ -158,33 +47,19 @@ function App() {
     }
   };
 
-  const handleSpotifyLogin = async () => {
-    // Generate PKCE code verifier and challenge
-    const codeVerifier = generateRandomString(64);
-    const codeChallenge = await generateCodeChallenge(codeVerifier);
-
-    // Store verifier for later use
-    localStorage.setItem("spotify_code_verifier", codeVerifier);
-
-    const authUrl = new URL("https://accounts.spotify.com/authorize");
-    authUrl.searchParams.set("client_id", SPOTIFY_CLIENT_ID);
-    authUrl.searchParams.set("response_type", "code");
-    authUrl.searchParams.set("redirect_uri", SPOTIFY_REDIRECT_URI);
-    authUrl.searchParams.set("scope", SPOTIFY_SCOPES);
-    authUrl.searchParams.set("code_challenge_method", "S256");
-    authUrl.searchParams.set("code_challenge", codeChallenge);
-
-    window.location.href = authUrl.toString();
+  const handleClear = () => {
+    setResult(null);
+    localStorage.removeItem(STORAGE_KEY);
   };
 
-  const handleCreatePlaylist = async () => {
-    if (!spotifyToken || !result?.processed_songs) return;
-
-    // TODO: Implement Spotify playlist creation
-    alert(
-      "Playlist creation coming soon! This will search for songs on Spotify and create a playlist.",
+  // Show loading while checking Spotify auth
+  if (spotify.isLoading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-gray-900 via-purple-900 to-gray-900 flex items-center justify-center">
+        <div className="text-white text-xl">Loading...</div>
+      </div>
     );
-  };
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-purple-900 to-gray-900 py-12 px-4">
@@ -199,73 +74,20 @@ function App() {
           </p>
         </div>
 
-        {/* Spotify Login */}
-        <div className="bg-gray-800/50 backdrop-blur rounded-xl p-6 mb-8">
-          <div className="flex items-center justify-between">
-            <div>
-              <h2 className="text-xl font-semibold text-white">
-                Spotify Connection
-              </h2>
-              <p className="text-gray-400 text-sm">
-                {spotifyToken
-                  ? "Connected! You can create playlists."
-                  : "Connect to create playlists from scraped songs"}
-              </p>
-            </div>
-            {spotifyToken ? (
-              <span className="bg-green-500/20 text-green-400 px-4 py-2 rounded-lg">
-                ✓ Connected
-              </span>
-            ) : (
-              <button
-                onClick={handleSpotifyLogin}
-                disabled={!SPOTIFY_CLIENT_ID}
-                className="bg-green-500 hover:bg-green-600 disabled:bg-gray-600 disabled:cursor-not-allowed text-white px-6 py-2 rounded-lg font-semibold transition-colors"
-              >
-                Connect Spotify
-              </button>
-            )}
-          </div>
-          {!SPOTIFY_CLIENT_ID && (
-            <p className="text-yellow-400 text-sm mt-2">
-              ⚠️ Set VITE_SPOTIFY_CLIENT_ID in .env to enable Spotify
-              integration
-            </p>
-          )}
-        </div>
+        {/* Spotify Auth */}
+        <SpotifyAuth
+          user={spotify.user}
+          isConfigured={spotify.isConfigured}
+          onLogin={spotify.login}
+          onLogout={spotify.logout}
+        />
 
-        {/* Scrape Form */}
-        <form
-          onSubmit={handleScrape}
-          className="bg-gray-800/50 backdrop-blur rounded-xl p-6 mb-8"
-        >
-          <label className="block text-white font-semibold mb-2">
-            TikTok Username
-          </label>
-          <div className="flex gap-4">
-            <input
-              type="text"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              placeholder="e.g., mrbeast"
-              className="flex-1 bg-gray-700 text-white px-4 py-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
-              disabled={loading}
-            />
-            <button
-              type="submit"
-              disabled={loading || !username.trim()}
-              className="bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white px-8 py-3 rounded-lg font-semibold transition-colors"
-            >
-              {loading ? "Scraping..." : "Scrape Songs"}
-            </button>
-          </div>
-          {loading && (
-            <p className="text-gray-400 text-sm mt-3">
-              ⏳ This may take several minutes depending on the number of
-              videos...
-            </p>
-          )}
-        </form>
+        {/* Scrape Form - disabled if not logged in */}
+        <ScrapeForm
+          onScrape={handleScrape}
+          isLoading={loading}
+          disabled={!spotify.user}
+        />
 
         {/* Error */}
         {error && (
@@ -276,115 +98,12 @@ function App() {
 
         {/* Results */}
         {result && (
-          <div className="bg-gray-800/50 backdrop-blur rounded-xl p-6">
-            <div className="flex items-center justify-between mb-6">
-              <div>
-                <h2 className="text-2xl font-bold text-white">
-                  Results for @{result.username}
-                </h2>
-                <p className="text-gray-400">
-                  {result.total_unique_titles} audio titles found •{" "}
-                  {result.real_songs_identified} real songs identified
-                </p>
-              </div>
-              {spotifyToken &&
-                result.processed_songs &&
-                result.processed_songs.length > 0 && (
-                  <button
-                    onClick={handleCreatePlaylist}
-                    className="bg-green-500 hover:bg-green-600 text-white px-6 py-2 rounded-lg font-semibold transition-colors"
-                  >
-                    Create Playlist
-                  </button>
-                )}
-            </div>
-
-            {/* Songs Table */}
-            {result.processed_songs && result.processed_songs.length > 0 ? (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left">
-                  <thead>
-                    <tr className="border-b border-gray-700">
-                      <th className="pb-3 text-gray-400 font-semibold">#</th>
-                      <th className="pb-3 text-gray-400 font-semibold">Song</th>
-                      <th className="pb-3 text-gray-400 font-semibold">
-                        Artist
-                      </th>
-                      <th className="pb-3 text-gray-400 font-semibold">Type</th>
-                      <th className="pb-3 text-gray-400 font-semibold">
-                        Confidence
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {result.processed_songs.map((song, index) => (
-                      <tr key={index} className="border-b border-gray-700/50">
-                        <td className="py-3 text-gray-500">{index + 1}</td>
-                        <td className="py-3 text-white font-medium">
-                          {song.song || "-"}
-                        </td>
-                        <td className="py-3 text-gray-300">
-                          {song.artist || "-"}
-                        </td>
-                        <td className="py-3">
-                          <span
-                            className={`px-2 py-1 rounded text-xs ${
-                              song.type === "original"
-                                ? "bg-blue-500/20 text-blue-400"
-                                : song.type === "remix"
-                                  ? "bg-purple-500/20 text-purple-400"
-                                  : "bg-gray-500/20 text-gray-400"
-                            }`}
-                          >
-                            {song.type}
-                          </span>
-                        </td>
-                        <td className="py-3">
-                          <span
-                            className={`px-2 py-1 rounded text-xs ${
-                              song.confidence === "high"
-                                ? "bg-green-500/20 text-green-400"
-                                : song.confidence === "medium"
-                                  ? "bg-yellow-500/20 text-yellow-400"
-                                  : "bg-red-500/20 text-red-400"
-                            }`}
-                          >
-                            {song.confidence || "unknown"}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <div className="text-center py-8">
-                <p className="text-gray-400">No identified songs found.</p>
-                <p className="text-gray-500 text-sm mt-2">
-                  Raw titles scraped: {result.raw_titles.length}
-                </p>
-              </div>
-            )}
-
-            {/* Download Button */}
-            <div className="mt-6 pt-6 border-t border-gray-700">
-              <button
-                onClick={() => {
-                  const blob = new Blob([JSON.stringify(result, null, 2)], {
-                    type: "application/json",
-                  });
-                  const url = URL.createObjectURL(blob);
-                  const a = document.createElement("a");
-                  a.href = url;
-                  a.download = `tiktok-songs-${result.username}.json`;
-                  a.click();
-                }}
-                className="text-purple-400 hover:text-purple-300 transition-colors"
-              >
-                📥 Download Results as JSON
-              </button>
-            </div>
-          </div>
+          <SongList
+            result={result}
+            isLoggedIn={!!spotify.user}
+            onCreatePlaylist={spotify.createPlaylist}
+            onClear={handleClear}
+          />
         )}
       </div>
     </div>
