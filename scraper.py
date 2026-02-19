@@ -252,22 +252,32 @@ class TikTokScraper:
         
         return None
 
-    def _navigate_to_next_video(self, page):
-        """Navigate to the next video in the profile."""
+    def _navigate_to_next_video(self, page, retries=3):
+        """Navigate to the next video in the profile with retry logic."""
         next_button = page.locator('button[data-e2e="arrow-right"]')
         
-        if not next_button.is_visible(timeout=2000):
-            print("Next button not visible. Reached the end.")
-            return False
+        for attempt in range(retries):
+            try:
+                if next_button.is_visible(timeout=2000):
+                    # Check if button is disabled (last video)
+                    is_disabled = next_button.get_attribute('disabled')
+                    if is_disabled is not None:
+                        print("Next button is disabled. Reached the last video.")
+                        return False
+                    
+                    # Button is visible and not disabled - click it
+                    next_button.click()
+                    self._random_delay(0.5, 1.0)
+                    return True
+            except Exception:
+                pass
+            
+            # Button not found, wait and retry
+            if attempt < retries - 1:
+                self._random_delay(1.5, 2.5)
         
-        is_disabled = next_button.get_attribute('disabled')
-        if is_disabled is not None:
-            print("Next button is disabled. Reached the last video.")
-            return False
-        
-        next_button.click()
-        self._random_delay(0.5, 1.0)
-        return True
+        print("Next button not visible after retries. Reached the end.")
+        return False
 
     def _try_recover_navigation(self, page):
         """Try to recover and continue navigation after an error."""
