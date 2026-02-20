@@ -159,22 +159,45 @@ export function useSpotify() {
     setUser(null);
   };
 
-  // Search for a track
+  // Search for a track on Spotify
   const searchTrack = async (
-    song: string,
-    artist: string,
+    songName: string,
+    artistName: string,
   ): Promise<SpotifyTrack | null> => {
     if (!token) return null;
 
-    const query = artist ? `track:${song} artist:${artist}` : song;
-    const response = await fetch(
-      `https://api.spotify.com/v1/search?q=${encodeURIComponent(query)}&type=track&limit=1`,
-      { headers: { Authorization: `Bearer ${token}` } },
-    );
+    try {
+      // Build search query - combine song and artist for better results
+      const query = artistName ? `${songName} ${artistName}` : songName;
 
-    if (!response.ok) return null;
-    const data = await response.json();
-    return data.tracks?.items?.[0] || null;
+      const url = new URL("https://api.spotify.com/v1/search");
+      url.searchParams.set("q", query);
+      url.searchParams.set("type", "track");
+      url.searchParams.set("limit", "1");
+
+      const response = await fetch(url.toString(), {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      if (!response.ok) {
+        console.error("Search failed:", response.status, await response.text());
+        return null;
+      }
+
+      const data = await response.json();
+      const track = data.tracks?.items?.[0] || null;
+
+      if (track) {
+        console.log(`Found: "${track.name}" by ${track.artists[0]?.name}`);
+      } else {
+        console.log(`Not found: "${songName}" by "${artistName}"`);
+      }
+
+      return track;
+    } catch (err) {
+      console.error("Search error:", err);
+      return null;
+    }
   };
 
   // Create playlist and add tracks
@@ -183,62 +206,99 @@ export function useSpotify() {
     songs: Song[],
     onProgress?: (current: number, total: number) => void,
   ): Promise<SpotifyPlaylist | null> => {
-    if (!token || !user) return null;
-
-    // Create playlist
-    const createResponse = await fetch(
-      `https://api.spotify.com/v1/users/${user.id}/playlists`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          name,
-          description: "Created with TikTok Song Scraper",
-          public: false,
-        }),
-      },
-    );
-
-    if (!createResponse.ok) return null;
-    const playlist: SpotifyPlaylist = await createResponse.json();
-
-    // Search for each song and collect URIs
-    const trackUris: string[] = [];
-    const songsToSearch = songs.filter((s) => s.song);
-
-    for (let i = 0; i < songsToSearch.length; i++) {
-      const song = songsToSearch[i];
-      if (song.song) {
-        const track = await searchTrack(song.song, song.artist || "");
-        if (track) {
-          trackUris.push(track.uri);
-        }
-        onProgress?.(i + 1, songsToSearch.length);
-        // Small delay to avoid rate limiting
-        await new Promise((r) => setTimeout(r, 100));
-      }
+    if (!token || !user) {
+      console.error("No token or user for playlist creation");
+      return null;
     }
 
-    // Add tracks in batches of 100
-    for (let i = 0; i < trackUris.length; i += 100) {
-      const batch = trackUris.slice(i, i + 100);
-      await fetch(
-        `https://api.spotify.com/v1/playlists/${playlist.id}/tracks`,
+    try {
+      // Step 1: Create empty playlist using /me/playlists endpoint
+      console.log(`Creating playlist "${name}"...`);
+      const createResponse = await fetch(
+        "https://api.spotify.com/v1/me/playlists",
         {
           method: "POST",
           headers: {
             Authorization: `Bearer ${token}`,
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({ uris: batch }),
+          body: JSON.stringify({
+            name,
+            description: "Created with TikTok Song Scraper",
+            public: false,
+          }),
         },
       );
-    }
 
-    return playlist;
+      if (!createResponse.ok) {
+        const errorText = await createResponse.text();
+        console.error(
+          "Failed to create playlist:",
+          createResponse.status,
+          errorText,
+        );
+        return null;
+      }
+
+      const playlist: SpotifyPlaylist = await createResponse.json();
+      console.log(`Playlist created: ${playlist.id}`);
+
+      // Step 2: Search for each song and collect URIs
+      const trackUris: string[] = [];
+      const songsToSearch = songs.filter((s) => s.song);
+      console.log(`Searching for ${songsToSearch.length} songs...`);
+
+      for (let i = 0; i < songsToSearch.length; i++) {
+        const song = songsToSearch[i];
+        if (song.song) {
+          const track = await searchTrack(song.song, song.artist || "");
+          if (track?.uri) {
+            trackUris.push(track.uri);
+          }
+          onProgress?.(i + 1, songsToSearch.length);
+          // Small delay to avoid rate limiting
+          await new Promise((r) => setTimeout(r, 50));
+        }
+      }
+
+      console.log(`Found ${trackUris.length} tracks to add`);
+
+      // Step 3: Add tracks to playlist in batches of 100 using /items endpoint
+      if (trackUris.length > 0) {
+        for (let i = 0; i < trackUris.length; i += 100) {
+          const batch = trackUris.slice(i, i + 100);
+          console.log(`Adding batch of ${batch.length} tracks...`);
+
+          const addResponse = await fetch(
+            `https://api.spotify.com/v1/playlists/${playlist.id}/items`,
+            {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${token}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({ uris: batch }),
+            },
+          );
+
+          if (!addResponse.ok) {
+            const errorText = await addResponse.text();
+            console.error(
+              "Failed to add tracks:",
+              addResponse.status,
+              errorText,
+            );
+          } else {
+            console.log(`Added ${batch.length} tracks successfully`);
+          }
+        }
+      }
+
+      return playlist;
+    } catch (err) {
+      console.error("Playlist creation error:", err);
+      return null;
+    }
   };
 
   return {
